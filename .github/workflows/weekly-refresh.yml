@@ -1,0 +1,44 @@
+# Goes to .github/workflows/weekly-refresh.yml in the runner repository (P-160).
+# Hourly tick at :17. Each tick reads the trigger held in Pigment (one export) and usually stops there.
+# It rolls the Hub's today clock once a day from 08:00 UTC, and fires the scheduled run when it is due
+# (the next scheduled run is set in Pigment; by default Monday at the default hour, sign-off S-3).
+name: weekly-refresh
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "auto, roll, capture, publish, check (read-only) or logtest (one run-log line)"
+        type: choice
+        options: [check, auto, roll, capture, publish, logtest]
+        default: check
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weekly-refresh
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # actions/checkout v4, pinned by commit sha
+        with:
+          persist-credentials: false
+      - name: selftest (offline)
+        run: python3 -I refresh.py selftest
+      - name: run
+        run: python3 -I refresh.py "$MODE"
+        env:
+          MODE: ${{ inputs.mode || 'auto' }}
+          RUN_ENABLED: ${{ vars.RUN_ENABLED }}
+          PUBLISH_ENABLED: ${{ vars.PUBLISH_ENABLED }}
+          PIGMENT_IMPORT_KEY: ${{ secrets.PIGMENT_IMPORT_KEY }}
+          PIGMENT_EXPORT_KEY: ${{ secrets.PIGMENT_EXPORT_KEY }}
+          PIGMENT_RUN_CONFIG: ${{ secrets.PIGMENT_RUN_CONFIG }}
+          PING_WEBHOOK_URL: ${{ secrets.PING_WEBHOOK_URL }}
