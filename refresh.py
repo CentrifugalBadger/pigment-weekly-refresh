@@ -41,8 +41,9 @@ import zoneinfo
 
 API = "https://pigment.app/api/v1"
 # No-write windows as (zone, start, end) in that zone's wall-clock time, so a window tied to a local
-# schedule follows its daylight-saving changes. The first covers the [02a] date rollover around midnight
-# ET; it was fixed at 05:00-07:30Z, which matched 00:00-02:30 ET only while the US is on standard time.
+# schedule follows its daylight-saving changes. The first covers the date rollovers Pigment runs on its
+# own schedule in [00] and [02a] (daily at 00:00 America/New_York); it was fixed at 05:00-07:30Z, which
+# matched 00:00-02:30 ET only while the US is on standard time.
 NO_WRITE = [("America/New_York", "00:00", "02:30"), ("UTC", "09:45", "11:30"), ("UTC", "12:00", "12:15")]
 MAX_CATCH_UP_DAYS = 31
 ROLL_HOUR_UTC = 8          # the daily clock roll waits for this hour (as the Mac job did)
