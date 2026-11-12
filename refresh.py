@@ -37,9 +37,14 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import zoneinfo
 
 API = "https://pigment.app/api/v1"
-QUIET_UTC = [("05:00", "07:30"), ("09:45", "11:30"), ("12:00", "12:15")]
+# No-write windows as (zone, start, end) in that zone's wall-clock time, so a window tied to a local
+# schedule follows its daylight-saving changes. The first covers the date rollovers Pigment runs on its
+# own schedule in [00] and [02a] (daily at 00:00 America/New_York); it was fixed at 05:00-07:30Z, which
+# matched 00:00-02:30 ET only while the US is on standard time.
+NO_WRITE = [("America/New_York", "00:00", "02:30"), ("UTC", "09:45", "11:30"), ("UTC", "12:00", "12:15")]
 MAX_CATCH_UP_DAYS = 31
 ROLL_HOUR_UTC = 8          # the daily clock roll waits for this hour (as the Mac job did)
 CAPTURE_MINUTES = 60       # a slot fires only if this long a stretch is clear of every no-write window
@@ -69,21 +74,30 @@ def monday_of(day):
     return day - dt.timedelta(days=day.weekday())
 
 
+def windows_near(t):
+    """Every no-write window on the local days around t, as (start, end, label) with UTC datetimes."""
+    t = t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+    out = []
+    for zone, a, b in NO_WRITE:
+        tz = zoneinfo.ZoneInfo(zone)
+        local = t.astimezone(tz).date()
+        for day in (local - dt.timedelta(days=1), local, local + dt.timedelta(days=1)):
+            ws = dt.datetime.combine(day, dt.time.fromisoformat(a), tz)
+            we = dt.datetime.combine(day + dt.timedelta(days=0 if b > a else 1), dt.time.fromisoformat(b), tz)
+            out.append((ws.astimezone(dt.timezone.utc), we.astimezone(dt.timezone.utc), f"{a}-{b} {zone}"))
+    return out
+
+
 def quiet_window(t):
-    hm = t.strftime("%H:%M")
-    return next((w for w in QUIET_UTC if w[0] <= hm < w[1]), None)
+    """The label of the no-write window t falls in, or None."""
+    t = t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+    return next((label for ws, we, label in windows_near(t) if ws <= t < we), None)
 
 
 def clear_for(t, minutes):
     """True if no no-write window touches [t, t + minutes)."""
     end = t + dt.timedelta(minutes=minutes)
-    for a, b in QUIET_UTC:
-        for day in {t.date(), end.date()}:
-            ws = dt.datetime.combine(day, dt.time.fromisoformat(a), t.tzinfo)
-            we = dt.datetime.combine(day, dt.time.fromisoformat(b), t.tzinfo)
-            if ws < end and t < we:
-                return False
-    return True
+    return not any(ws < end and t < we for ws, we, _ in windows_near(t) + windows_near(end))
 
 
 def last_cell(csv_text):
@@ -229,7 +243,7 @@ class Run:
     def guard_write(self):
         w = quiet_window(utcnow())
         if w:
-            raise Stop(f"deferred: {w[0]}-{w[1]}Z is a no-write window; re-run after it", 75)
+            raise Stop(f"deferred: {w} is a no-write window; re-run after it", 75)
 
     def read(self, key, label):
         return last_cell(self.p.export(self.cfg["views"][key], label))
@@ -298,8 +312,8 @@ class Run:
                 raise Stop("Live's Last Actuals Month read blank: nothing added", 2)
             day = self.monday.isoformat()
             landed, _ = self.p.push(self.cfg["configs"]["row_create"],
-                                    "Name,Capture Date,Last Actuals Month,Notes\n"
-                                    + csv_line(day, day, lam, "Weekly snapshot of Live (R-113), added by the weekly run"),
+                                    "Name,Last Actuals Month,Notes\n"
+                                    + csv_line(day, lam, "Weekly snapshot of Live (R-113), added by the weekly run"),
                                     "add row")
             if landed < 1:
                 raise Stop("the row push landed nothing")
@@ -448,7 +462,17 @@ def selftest():
     utc = dt.timezone.utc
     assert monday_of(dt.date(2026, 10, 21)) == dt.date(2026, 10, 19)
     assert monday_of(dt.date(2026, 10, 19)) == dt.date(2026, 10, 19)
-    assert quiet_window(dt.datetime(2026, 10, 19, 10, 0)) == ("09:45", "11:30")
+    assert quiet_window(dt.datetime(2026, 10, 19, 10, 0)) == "09:45-11:30 UTC"
+    # the ET window follows daylight saving: 04:00-06:30Z in EDT, 05:00-07:30Z in EST
+    et = "00:00-02:30 America/New_York"
+    assert quiet_window(dt.datetime(2026, 10, 19, 4, 30)) == et      # EDT
+    assert quiet_window(dt.datetime(2026, 10, 19, 6, 45)) is None
+    assert quiet_window(dt.datetime(2026, 11, 9, 4, 30)) is None      # EST
+    assert quiet_window(dt.datetime(2026, 11, 9, 7, 15)) == et
+    assert clear_for(dt.datetime(2026, 7, 20, 6, 47, tzinfo=utc), 60)
+    assert not clear_for(dt.datetime(2026, 11, 9, 6, 47, tzinfo=utc), 60)
+    assert clear_for(dt.datetime(2026, 11, 9, 8, 17, tzinfo=utc), 60)   # the default Monday slot, EST
+    assert quiet_window(dt.datetime(2027, 3, 15, 4, 30)) == et       # EDT again from 2027-03-14
     assert quiet_window(dt.datetime(2026, 10, 19, 8, 17)) is None
     assert clear_for(dt.datetime(2026, 10, 19, 8, 17, tzinfo=utc), 60)
     assert not clear_for(dt.datetime(2026, 10, 19, 9, 17, tzinfo=utc), 60)
